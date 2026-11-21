@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 )
 
@@ -21,12 +23,31 @@ type osProcess struct {
 	finished bool
 }
 
+// resolveExecutable avoids os/exec.LookPath. Go 1.27 implements the latter
+// through faccessat2, which Android's seccomp filter kills with SIGSYS on
+// older Termux kernels.
+func resolveExecutable(executable string) (string, error) {
+	if strings.ContainsRune(executable, os.PathSeparator) {
+		return executable, nil
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, executable)
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("executable file not found in $PATH: %s", executable)
+}
+
 func newOSProcess(executable string, args []string, files []*os.File, env []string) (process, error) {
-	executable, err := exec.LookPath(executable)
+	executable, err := resolveExecutable(executable)
 	if err != nil {
 		return nil, err
 	}
-
 	fds := make([]uintptr, 0, len(files))
 	for _, file := range files {
 		fd, err := sysConnFd(file)
